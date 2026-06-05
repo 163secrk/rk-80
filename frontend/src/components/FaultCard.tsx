@@ -1,0 +1,113 @@
+import React from 'react';
+import type { Fault } from '../types';
+import { levelConfig, statusConfig } from '../types';
+
+interface Props {
+  fault: Fault;
+  onEdit: (fault: Fault) => void;
+  onDelete: (id: number) => void;
+}
+
+export const FaultCard: React.FC<Props> = ({ fault, onEdit, onDelete }) => {
+  const [expanded, setExpanded] = React.useState(false);
+  const level = levelConfig[fault.level];
+  const status = statusConfig[fault.status];
+  
+  const modules = fault.affectedModules ? fault.affectedModules.split(',').filter(Boolean) : [];
+  
+  const getDuration = () => {
+    if (!fault.endTime) return null;
+    const start = new Date(fault.startTime).getTime();
+    const end = new Date(fault.endTime).getTime();
+    const diff = Math.floor((end - start) / 1000 / 60);
+    if (diff < 60) return `${diff} 分钟`;
+    const hours = Math.floor(diff / 60);
+    const mins = diff % 60;
+    return mins > 0 ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
+  };
+
+  return (
+    <div className="fault-card">
+      <div className="fault-header">
+        <div className="fault-info">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <h3 className="fault-title">{fault.title}</h3>
+            <span className="badge" style={{ backgroundColor: level.bgColor, color: level.color }}>
+              {level.label}
+            </span>
+            <span className="badge" style={{ backgroundColor: status.bgColor, color: status.color }}>
+              {status.label}
+            </span>
+          </div>
+          <div className="fault-meta">
+            <span>🕐 开始: {fault.startTime}</span>
+            {fault.endTime && <span>🏁 结束: {fault.endTime}</span>}
+            {getDuration() && <span>⏱ 持续: {getDuration()}</span>}
+          </div>
+        </div>
+        <div className="fault-actions">
+          <button className="icon-btn" onClick={() => onEdit(fault)} title="编辑">✏️</button>
+          <button className="icon-btn" onClick={() => onDelete(fault.id)} title="删除">🗑️</button>
+        </div>
+      </div>
+      
+      {fault.description && (
+        <div className="fault-details">
+          <p className="fault-description">{fault.description}</p>
+        </div>
+      )}
+      
+      {modules.length > 0 && (
+        <div className="fault-details" style={{ paddingTop: 0 }}>
+          <div className="fault-section">
+            <div className="section-label">受影响模块</div>
+            <div className="module-tags">
+              {modules.map((mod, idx) => (
+                <span key={idx} className="module-tag">{mod.trim()}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {expanded && (
+        <div className="fault-details" style={{ paddingTop: 0 }}>
+          {fault.rootCause && (
+            <div className="fault-section">
+              <div className="section-label">根本原因</div>
+              <p style={{ color: '#475569', fontSize: 14 }}>{fault.rootCause}</p>
+            </div>
+          )}
+          
+          {fault.solution && (
+            <div className="fault-section">
+              <div className="section-label">解决方案</div>
+              <p style={{ color: '#475569', fontSize: 14 }}>{fault.solution}</p>
+            </div>
+          )}
+          
+          {fault.timelines && fault.timelines.length > 0 && (
+            <div className="fault-section">
+              <div className="section-label">时间线</div>
+              <div className="timeline">
+                {fault.timelines.map((tl) => (
+                  <div key={tl.id} className="timeline-item">
+                    <div className="timeline-time">{tl.time}</div>
+                    <div className="timeline-event">{tl.event}</div>
+                    {tl.operator && <div className="timeline-operator">操作人: {tl.operator}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      
+      <div style={{ padding: '0 24px 20px' }}>
+        <button className="expand-btn" onClick={() => setExpanded(!expanded)}>
+          {expanded ? '收起详情 ▲' : '展开详情 ▼'}
+        </button>
+      </div>
+    </div>
+  );
+};
