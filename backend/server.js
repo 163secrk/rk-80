@@ -98,7 +98,7 @@ db.serialize(() => {
 
 app.get('/api/faults', (req, res) => {
   const { level, status } = req.query;
-  let sql = 'SELECT * FROM faults ORDER BY startTime DESC';
+  let sql = 'SELECT * FROM faults';
   const params = [];
   
   if (level || status) {
@@ -112,8 +112,9 @@ app.get('/api/faults', (req, res) => {
       params.push(status);
     }
     sql += ' WHERE ' + conditions.join(' AND ');
-    sql += ' ORDER BY startTime DESC';
   }
+  
+  sql += ' ORDER BY startTime DESC';
   
   db.all(sql, params, (err, rows) => {
     if (err) {

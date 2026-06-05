@@ -142,8 +142,8 @@ export const FaultModal: React.FC<Props> = ({ fault, onClose, onSave }) => {
                 <input
                   type="datetime-local"
                   name="startTime"
-                  value={formData.startTime.replace(' ', 'T').slice(0, 16)}
-                  onChange={e => handleChange({ ...e, target: { ...e.target, value: e.target.value.replace('T', ' ') + ':00' } })}
+                  value={formData.startTime ? formData.startTime.replace(' ', 'T').slice(0, 16) : ''}
+                  onChange={e => handleChange({ ...e, target: { ...e.target, value: e.target.value ? e.target.value.replace('T', ' ') + ':00' : '' } })}
                   required
                 />
               </div>
@@ -221,7 +221,7 @@ export const FaultModal: React.FC<Props> = ({ fault, onClose, onSave }) => {
                   <input
                     type="datetime-local"
                     value={tl.time ? tl.time.replace(' ', 'T').slice(0, 16) : ''}
-                    onChange={e => handleTimelineChange(index, 'time', e.target.value.replace('T', ' ') + ':00')}
+                    onChange={e => handleTimelineChange(index, 'time', e.target.value ? e.target.value.replace('T', ' ') + ':00' : '')}
                   />
                   <input
                     type="text"
