@@ -143,7 +143,7 @@ export const FaultModal: React.FC<Props> = ({ fault, onClose, onSave }) => {
                   type="datetime-local"
                   name="startTime"
                   value={formData.startTime ? formData.startTime.replace(' ', 'T').slice(0, 16) : ''}
-                  onChange={e => handleChange({ ...e, target: { ...e.target, value: e.target.value ? e.target.value.replace('T', ' ') + ':00' : '' } })}
+                  onChange={e => setFormData(prev => ({ ...prev, startTime: e.target.value ? e.target.value.replace('T', ' ') + ':00' : '' }))}
                   required
                 />
               </div>
@@ -153,7 +153,7 @@ export const FaultModal: React.FC<Props> = ({ fault, onClose, onSave }) => {
                   type="datetime-local"
                   name="endTime"
                   value={formData.endTime ? formData.endTime.replace(' ', 'T').slice(0, 16) : ''}
-                  onChange={e => handleChange({ ...e, target: { ...e.target, value: e.target.value ? e.target.value.replace('T', ' ') + ':00' : '' } })}
+                  onChange={e => setFormData(prev => ({ ...prev, endTime: e.target.value ? e.target.value.replace('T', ' ') + ':00' : '' }))}
                 />
               </div>
             </div>

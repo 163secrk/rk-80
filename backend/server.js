@@ -276,11 +276,67 @@ app.get('/api/stats', (req, res) => {
           levelResult.forEach(item => {
             levelCounts[item.level] = item.count;
           });
-          
-          res.json({
-            total: totalResult.total,
-            active: activeResult.active,
-            byLevel: levelCounts
+
+          db.get("SELECT AVG(strftime('%s', endTime) - strftime('%s', startTime)) as avgDuration FROM faults WHERE status = 'resolved' AND endTime IS NOT NULL", (err, mttrResult) => {
+            if (err) {
+              res.status(500).json({ error: err.message });
+              return;
+            }
+
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().slice(0, 10);
+
+            db.all("SELECT DATE(startTime) as date, COUNT(*) as count FROM faults WHERE startTime >= ? GROUP BY DATE(startTime) ORDER BY date ASC", [thirtyDaysAgoStr + ' 00:00:00'], (err, trendResult) => {
+              if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+              }
+
+              const trendMap = {};
+              trendResult.forEach(item => {
+                trendMap[item.date] = item.count;
+              });
+
+              const last30DaysTrend = [];
+              for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                const dateStr = d.toISOString().slice(0, 10);
+                last30DaysTrend.push({
+                  date: dateStr,
+                  count: trendMap[dateStr] || 0
+                });
+              }
+
+              db.all("SELECT affectedModules FROM faults WHERE affectedModules IS NOT NULL AND affectedModules != ''", (err, modulesResult) => {
+                if (err) {
+                  res.status(500).json({ error: err.message });
+                  return;
+                }
+
+                const moduleCounts = {};
+                modulesResult.forEach(row => {
+                  const modules = row.affectedModules.split(/[,，]/).map(m => m.trim()).filter(m => m);
+                  modules.forEach(mod => {
+                    moduleCounts[mod] = (moduleCounts[mod] || 0) + 1;
+                  });
+                });
+
+                const moduleDistribution = Object.entries(moduleCounts)
+                  .map(([name, value]) => ({ name, value }))
+                  .sort((a, b) => b.value - a.value);
+
+                res.json({
+                  total: totalResult.total,
+                  active: activeResult.active,
+                  byLevel: levelCounts,
+                  mttrSeconds: mttrResult.avgDuration ? Math.round(mttrResult.avgDuration) : 0,
+                  last30DaysTrend,
+                  moduleDistribution
+                });
+              });
+            });
           });
         });
       });

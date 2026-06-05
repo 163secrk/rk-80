@@ -22,6 +22,16 @@ export interface Fault {
   timelines?: TimelineEvent[];
 }
 
+export interface TrendItem {
+  date: string;
+  count: number;
+}
+
+export interface ModuleItem {
+  name: string;
+  value: number;
+}
+
 export interface Stats {
   total: number;
   active: number;
@@ -31,6 +41,9 @@ export interface Stats {
     minor?: number;
     info?: number;
   };
+  mttrSeconds: number;
+  last30DaysTrend: TrendItem[];
+  moduleDistribution: ModuleItem[];
 }
 
 export const levelConfig = {
