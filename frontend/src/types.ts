@@ -78,3 +78,38 @@ export const statusConfig = {
   resolved: { label: '已解决', color: '#16a34a', bgColor: '#f0fdf4' },
   monitoring: { label: '监控中', color: '#2563eb', bgColor: '#eff6ff' }
 };
+
+export interface CsvImportRow {
+  title: string;
+  description?: string;
+  level: 'critical' | 'major' | 'minor' | 'info';
+  startTime: string;
+  endTime?: string;
+  affectedModules?: string;
+  rootCause?: string;
+  solution?: string;
+  status?: 'active' | 'resolved' | 'monitoring';
+}
+
+export interface CsvValidateResponse {
+  total: number;
+  valid: number;
+  invalid: number;
+  errors: string[];
+  previewData: CsvImportRow[];
+  validData: CsvImportRow[];
+  missingHeaders?: string[];
+  requiredHeaders?: string[];
+  optionalHeaders?: string[];
+}
+
+export interface CsvImportResponse {
+  message: string;
+  success: number;
+  failed: number;
+  failedRecords?: Array<{
+    row: number;
+    record: CsvImportRow;
+    error: string;
+  }>;
+}

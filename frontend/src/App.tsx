@@ -5,6 +5,7 @@ import { levelConfig, statusConfig } from './types';
 import { FaultCard } from './components/FaultCard';
 import { FaultModal } from './components/FaultModal';
 import { EscalationHistoryModal } from './components/EscalationHistoryModal';
+import { CsvImportModal } from './components/CsvImportModal';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
@@ -45,6 +46,7 @@ function App() {
   const [batchStatus, setBatchStatus] = useState<string>('active');
   const [showBatchConfirm, setShowBatchConfirm] = useState<'status' | 'delete' | null>(null);
   const [escalationHistoryFault, setEscalationHistoryFault] = useState<Fault | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const chartTrendData = useMemo(() => {
     if (!stats?.last30DaysTrend) return [];
@@ -222,6 +224,9 @@ function App() {
               ⚠️ {escalatedCount} 个故障已被自动升级，请关注处理
             </div>
           )}
+          <button className="btn btn-secondary" onClick={() => setShowImportModal(true)}>
+            📥 批量导入
+          </button>
           <button className="btn btn-primary" onClick={handleCreate}>
             + 新增故障记录
           </button>
@@ -573,6 +578,13 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showImportModal && (
+        <CsvImportModal
+          onClose={() => setShowImportModal(false)}
+          onImportComplete={fetchData}
+        />
       )}
     </div>
   );

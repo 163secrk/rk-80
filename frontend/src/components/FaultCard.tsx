@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { Fault } from '../types';
 import { levelConfig, statusConfig } from '../types';
+import { api } from '../api';
 
 interface Props {
   fault: Fault;
@@ -12,9 +13,22 @@ interface Props {
 }
 
 export const FaultCard: React.FC<Props> = ({ fault, selected, onSelect, onEdit, onDelete, onViewEscalationHistory }) => {
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const level = levelConfig[fault.level];
   const status = statusConfig[fault.status];
+
+  const handleExportWord = async () => {
+    setExporting(true);
+    try {
+      await api.exportFaultWord(fault.id);
+    } catch (err) {
+      console.error('导出Word失败:', err);
+      alert('导出Word报告失败，请重试');
+    } finally {
+      setExporting(false);
+    }
+  };
   
   const modules = fault.affectedModules ? fault.affectedModules.split(',').filter(Boolean) : [];
   const isEscalated = fault.escalationCount && fault.escalationCount > 0;
@@ -70,6 +84,14 @@ export const FaultCard: React.FC<Props> = ({ fault, selected, onSelect, onEdit, 
               📜
             </button>
           )}
+          <button
+            className="icon-btn"
+            onClick={handleExportWord}
+            title="导出Word复盘报告"
+            disabled={exporting}
+          >
+            {exporting ? '⏳' : '📄'}
+          </button>
           <button className="icon-btn" onClick={() => onEdit(fault)} title="编辑">✏️</button>
           <button className="icon-btn" onClick={() => onDelete(fault.id)} title="删除">🗑️</button>
         </div>

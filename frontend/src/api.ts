@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Fault, Stats, PaginatedResponse, EscalationLog } from './types';
+import type { Fault, Stats, PaginatedResponse, EscalationLog, CsvValidateResponse, CsvImportResponse } from './types';
 
 const API_BASE = '/api';
 
@@ -62,5 +62,51 @@ export const api = {
   async getStats(): Promise<Stats> {
     const res = await axios.get(`${API_BASE}/stats`);
     return res.data;
+  },
+
+  async validateCsvImport(csvText: string): Promise<CsvValidateResponse> {
+    const res = await axios.post(`${API_BASE}/faults/batch/validate`, { csvText });
+    return res.data;
+  },
+
+  async batchImportFaults(records: any[]): Promise<CsvImportResponse> {
+    const res = await axios.post(`${API_BASE}/faults/batch/import`, { records });
+    return res.data;
+  },
+
+  async downloadCsvTemplate(): Promise<void> {
+    const res = await axios.get(`${API_BASE}/faults/csv-template`, {
+      responseType: 'blob'
+    });
+    const url = window.URL.createObjectURL(new Blob([res.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'faults_import_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  async exportFaultWord(id: number): Promise<void> {
+    const res = await axios.get(`${API_BASE}/faults/${id}/export-word`, {
+      responseType: 'blob'
+    });
+    const contentDisposition = res.headers['content-disposition'];
+    let fileName = `故障复盘报告_${id}.docx`;
+    if (contentDisposition) {
+      const matches = contentDisposition.match(/filename\*=UTF-8''(.+)/);
+      if (matches) {
+        fileName = decodeURIComponent(matches[1]);
+      }
+    }
+    const url = window.URL.createObjectURL(new Blob([res.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   }
 };

@@ -2,6 +2,21 @@ const express = require('express');
 const cors = require('cors');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const csv = require('csv-parser');
+const { Readable } = require('stream');
+const {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  AlignmentType,
+  HeadingLevel,
+  BorderStyle
+} = require('docx');
 
 const app = express();
 const PORT = 8080;
@@ -556,6 +571,449 @@ app.get('/api/stats', (req, res) => {
       });
     });
   });
+});
+
+const REQUIRED_CSV_HEADERS = ['title', 'level', 'startTime'];
+const OPTIONAL_CSV_HEADERS = ['description', 'endTime', 'affectedModules', 'rootCause', 'solution', 'status'];
+const VALID_LEVELS = ['critical', 'major', 'minor', 'info'];
+const VALID_STATUSES = ['active', 'resolved', 'monitoring'];
+
+const validateDatetime = (str) => {
+  if (!str) return true;
+  const regex = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+  if (!regex.test(str)) return false;
+  const date = new Date(str);
+  return !isNaN(date.getTime());
+};
+
+const parseCSV = (csvText) => {
+  return new Promise((resolve, reject) => {
+    const results = [];
+    const stream = Readable.from(csvText);
+    stream
+      .pipe(csv())
+      .on('data', (data) => results.push(data))
+      .on('end', () => resolve(results))
+      .on('error', reject);
+  });
+};
+
+app.post('/api/faults/batch/validate', async (req, res) => {
+  try {
+    const { csvText } = req.body;
+    if (!csvText) {
+      return res.status(400).json({ error: '请提供CSV数据' });
+    }
+
+    const rows = await parseCSV(csvText);
+    const headers = Object.keys(rows[0] || {}).map(h => h.trim());
+
+    const missingHeaders = REQUIRED_CSV_HEADERS.filter(h => !headers.includes(h));
+    if (missingHeaders.length > 0) {
+      return res.status(400).json({
+        error: '缺少必要的列',
+        missingHeaders,
+        requiredHeaders: REQUIRED_CSV_HEADERS,
+        optionalHeaders: OPTIONAL_CSV_HEADERS
+      });
+    }
+
+    const validRows = [];
+    const errors = [];
+
+    rows.forEach((row, index) => {
+      const rowErrors = [];
+      const rowNum = index + 2;
+
+      if (!row.title || !row.title.trim()) {
+        rowErrors.push(`第${rowNum}行: 标题不能为空`);
+      }
+
+      if (!row.level || !VALID_LEVELS.includes(row.level.trim())) {
+        rowErrors.push(`第${rowNum}行: 级别必须是 ${VALID_LEVELS.join(', ')} 之一`);
+      }
+
+      if (!row.startTime || !validateDatetime(row.startTime.trim())) {
+        rowErrors.push(`第${rowNum}行: 开始时间格式必须为 YYYY-MM-DD HH:MM:SS`);
+      }
+
+      if (row.endTime && row.endTime.trim() && !validateDatetime(row.endTime.trim())) {
+        rowErrors.push(`第${rowNum}行: 结束时间格式必须为 YYYY-MM-DD HH:MM:SS`);
+      }
+
+      if (row.status && row.status.trim() && !VALID_STATUSES.includes(row.status.trim())) {
+        rowErrors.push(`第${rowNum}行: 状态必须是 ${VALID_STATUSES.join(', ')} 之一`);
+      }
+
+      if (row.endTime && row.startTime && row.endTime.trim() && row.startTime.trim()) {
+        const start = new Date(row.startTime.trim()).getTime();
+        const end = new Date(row.endTime.trim()).getTime();
+        if (end < start) {
+          rowErrors.push(`第${rowNum}行: 结束时间不能早于开始时间`);
+        }
+      }
+
+      if (rowErrors.length > 0) {
+        errors.push(...rowErrors);
+      } else {
+        validRows.push({
+          title: row.title.trim(),
+          description: row.description?.trim() || '',
+          level: row.level.trim(),
+          startTime: row.startTime.trim(),
+          endTime: row.endTime?.trim() || null,
+          affectedModules: row.affectedModules?.trim() || '',
+          rootCause: row.rootCause?.trim() || '',
+          solution: row.solution?.trim() || '',
+          status: row.status?.trim() || 'active'
+        });
+      }
+    });
+
+    res.json({
+      total: rows.length,
+      valid: validRows.length,
+      invalid: errors.length > 0 ? rows.length - validRows.length : 0,
+      errors,
+      previewData: validRows.slice(0, 10),
+      validData: validRows
+    });
+  } catch (err) {
+    console.error('校验CSV失败:', err);
+    res.status(500).json({ error: '解析CSV文件失败: ' + err.message });
+  }
+});
+
+app.post('/api/faults/batch/import', (req, res) => {
+  const { records } = req.body;
+
+  if (!records || !Array.isArray(records) || records.length === 0) {
+    return res.status(400).json({ error: '请提供要导入的故障记录' });
+  }
+
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+
+    const insertStmt = db.prepare(`INSERT INTO faults 
+      (title, description, level, originalLevel, startTime, endTime, affectedModules, rootCause, solution, status) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    let successCount = 0;
+    const failedRecords = [];
+
+    records.forEach((record, index) => {
+      try {
+        insertStmt.run(
+          record.title,
+          record.description || '',
+          record.level,
+          record.level,
+          record.startTime,
+          record.endTime || null,
+          record.affectedModules || '',
+          record.rootCause || '',
+          record.solution || '',
+          record.status || 'active',
+          function(err) {
+            if (err) {
+              failedRecords.push({
+                row: index + 1,
+                record,
+                error: err.message
+              });
+            } else {
+              successCount++;
+            }
+          }
+        );
+      } catch (err) {
+        failedRecords.push({
+          row: index + 1,
+          record,
+          error: err.message
+        });
+      }
+    });
+
+    insertStmt.finalize();
+
+    db.run('COMMIT', (commitErr) => {
+      if (commitErr) {
+        db.run('ROLLBACK');
+        return res.status(500).json({ error: '导入失败，事务已回滚: ' + commitErr.message });
+      }
+
+      res.json({
+        message: `导入完成`,
+        success: successCount,
+        failed: failedRecords.length,
+        failedRecords
+      });
+    });
+  });
+});
+
+app.get('/api/faults/:id/export-word', (req, res) => {
+  const { id } = req.params;
+
+  db.get('SELECT * FROM faults WHERE id = ?', [id], (err, fault) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    if (!fault) {
+      return res.status(404).json({ error: '故障记录不存在' });
+    }
+
+    db.all('SELECT * FROM timelines WHERE faultId = ? ORDER BY time ASC', [id], async (timelineErr, timelines) => {
+      if (timelineErr) {
+        return res.status(500).json({ error: timelineErr.message });
+      }
+
+      const levelLabels = { critical: '严重', major: '重要', minor: '一般', info: '提示' };
+      const statusLabels = { active: '处理中', resolved: '已解决', monitoring: '监控中' };
+      const modules = fault.affectedModules ? fault.affectedModules.split(/[,，]/).map(m => m.trim()).filter(Boolean) : [];
+
+      const getDuration = () => {
+        if (!fault.endTime) return '处理中';
+        const start = new Date(fault.startTime).getTime();
+        const end = new Date(fault.endTime).getTime();
+        const diff = Math.floor((end - start) / 1000 / 60);
+        if (diff < 60) return `${diff} 分钟`;
+        const hours = Math.floor(diff / 60);
+        const mins = diff % 60;
+        return mins > 0 ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
+      };
+
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 400 },
+              children: [
+                new TextRun({
+                  text: '故障复盘报告',
+                  bold: true,
+                  size: 36,
+                  font: '微软雅黑'
+                })
+              ]
+            }),
+
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              spacing: { after: 600 },
+              children: [
+                new TextRun({
+                  text: fault.title,
+                  bold: true,
+                  size: 28,
+                  font: '微软雅黑',
+                  color: 'dc2626'
+                })
+              ]
+            }),
+
+            new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              rows: [
+                new TableRow({
+                  children: [
+                    new TableCell({
+                      width: { size: 20, type: WidthType.PERCENTAGE },
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '故障级别', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: levelLabels[fault.level] || fault.level, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      width: { size: 20, type: WidthType.PERCENTAGE },
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '当前状态', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: statusLabels[fault.status] || fault.status, font: '微软雅黑', size: 24 })] })]
+                    })
+                  ]
+                }),
+                new TableRow({
+                  children: [
+                    new TableCell({
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '开始时间', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: fault.startTime, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '结束时间', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: fault.endTime || '-', font: '微软雅黑', size: 24 })] })]
+                    })
+                  ]
+                }),
+                new TableRow({
+                  children: [
+                    new TableCell({
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '持续时间', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: getDuration(), font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      shading: { fill: 'f1f5f9' },
+                      children: [new Paragraph({ children: [new TextRun({ text: '报告编号', bold: true, font: '微软雅黑', size: 24 })] })]
+                    }),
+                    new TableCell({
+                      children: [new Paragraph({ children: [new TextRun({ text: `FAULT-${String(fault.id).padStart(4, '0')}`, font: '微软雅黑', size: 24 })] })]
+                    })
+                  ]
+                })
+              ]
+            }),
+
+            new Paragraph({ spacing: { before: 400, after: 200 }, children: [] }),
+
+            new Paragraph({
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 200 },
+              children: [
+                new TextRun({ text: '一、故障描述', bold: true, font: '微软雅黑', size: 28 })
+              ]
+            }),
+            new Paragraph({
+              spacing: { after: 200 },
+              children: [
+                new TextRun({ text: fault.description || '无', font: '微软雅黑', size: 24 })
+              ]
+            }),
+
+            new Paragraph({
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 200 },
+              children: [
+                new TextRun({ text: '二、受影响模块', bold: true, font: '微软雅黑', size: 28 })
+              ]
+            }),
+            new Paragraph({
+              spacing: { after: 200 },
+              children: [
+                new TextRun({
+                  text: modules.length > 0 ? modules.join('、') : '无',
+                  font: '微软雅黑',
+                  size: 24
+                })
+              ]
+            }),
+
+            new Paragraph({
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 200 },
+              children: [
+                new TextRun({ text: '三、时间线', bold: true, font: '微软雅黑', size: 28 })
+              ]
+            }),
+            ...(timelines && timelines.length > 0 ? timelines.map((tl, idx) => [
+              new Paragraph({
+                spacing: { before: 100, after: 50 },
+                children: [
+                  new TextRun({ text: `${idx + 1}. ${tl.time}`, bold: true, font: '微软雅黑', size: 24, color: '2563eb' })
+                ]
+              }),
+              new Paragraph({
+                spacing: { after: 100 },
+                indent: { left: 400 },
+                children: [
+                  new TextRun({ text: `事件：${tl.event}`, font: '微软雅黑', size: 24 })
+                ]
+              }),
+              ...(tl.operator ? [new Paragraph({
+                spacing: { after: 100 },
+                indent: { left: 400 },
+                children: [
+                  new TextRun({ text: `操作人：${tl.operator}`, font: '微软雅黑', size: 24 })
+                ]
+              })] : [])
+            ]).flat() : [
+              new Paragraph({
+                children: [
+                  new TextRun({ text: '无时间线记录', font: '微软雅黑', size: 24 })
+                ]
+              })
+            ]),
+
+            new Paragraph({
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 200 },
+              children: [
+                new TextRun({ text: '四、根因分析', bold: true, font: '微软雅黑', size: 28 })
+              ]
+            }),
+            new Paragraph({
+              spacing: { after: 200 },
+              children: [
+                new TextRun({ text: fault.rootCause || '待分析', font: '微软雅黑', size: 24 })
+              ]
+            }),
+
+            new Paragraph({
+              heading: HeadingLevel.HEADING_1,
+              spacing: { before: 400, after: 200 },
+              children: [
+                new TextRun({ text: '五、解决方案', bold: true, font: '微软雅黑', size: 28 })
+              ]
+            }),
+            new Paragraph({
+              spacing: { after: 200 },
+              children: [
+                new TextRun({ text: fault.solution || '待完善', font: '微软雅黑', size: 24 })
+              ]
+            }),
+
+            new Paragraph({
+              spacing: { before: 600, after: 200 },
+              alignment: AlignmentType.RIGHT,
+              children: [
+                new TextRun({
+                  text: `报告生成时间：${new Date().toLocaleString('zh-CN')}`,
+                  font: '微软雅黑',
+                  size: 20,
+                  color: '64748b'
+                })
+              ]
+            })
+          ]
+        }]
+      });
+
+      try {
+        const buffer = await Packer.toBuffer(doc);
+        const fileName = `故障复盘报告_${fault.title.replace(/[\\/:*?"<>|]/g, '_')}_${fault.id}.docx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+        res.send(buffer);
+      } catch (docErr) {
+        console.error('生成Word文档失败:', docErr);
+        res.status(500).json({ error: '生成Word文档失败: ' + docErr.message });
+      }
+    });
+  });
+});
+
+app.get('/api/faults/csv-template', (req, res) => {
+  const headers = [...REQUIRED_CSV_HEADERS, ...OPTIONAL_CSV_HEADERS];
+  const csvContent = headers.join(',') + '\n' +
+    '支付系统超时,critical,2026-06-03 14:30:00,用户无法完成支付,2026-06-03 15:45:00,支付模块,订单模块,第三方网关故障,切换备用通道,resolved\n' +
+    '登录异常,major,2026-06-02 09:15:00,验证码发送失败,2026-06-02 10:30:00,用户模块,认证模块,短信限流,接入备用通道,resolved';
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="faults_import_template.csv"');
+  res.send('\ufeff' + csvContent);
 });
 
 app.listen(PORT, () => {
