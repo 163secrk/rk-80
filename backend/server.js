@@ -24,12 +24,15 @@ db.serialize(() => {
     title TEXT NOT NULL,
     description TEXT,
     level TEXT NOT NULL,
+    originalLevel TEXT,
     startTime TEXT NOT NULL,
     endTime TEXT,
     affectedModules TEXT,
     rootCause TEXT,
     solution TEXT,
     status TEXT DEFAULT 'active',
+    lastEscalatedAt TEXT,
+    escalationCount INTEGER DEFAULT 0,
     createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
     updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
   )`);
@@ -43,16 +46,27 @@ db.serialize(() => {
     FOREIGN KEY (faultId) REFERENCES faults(id) ON DELETE CASCADE
   )`);
 
+  db.run(`CREATE TABLE IF NOT EXISTS escalation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    faultId INTEGER NOT NULL,
+    oldLevel TEXT NOT NULL,
+    newLevel TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    escalatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (faultId) REFERENCES faults(id) ON DELETE CASCADE
+  )`);
+
   const stmt = db.prepare('SELECT COUNT(*) as count FROM faults');
   stmt.get((err, row) => {
     if (row.count === 0) {
       const insertFault = db.prepare(`INSERT INTO faults 
-        (title, description, level, startTime, endTime, affectedModules, rootCause, solution, status) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        (title, description, level, originalLevel, startTime, endTime, affectedModules, rootCause, solution, status) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       
       insertFault.run(
         '支付系统超时',
         '用户无法完成支付，支付网关响应超时',
+        'critical',
         'critical',
         '2026-06-03 14:30:00',
         '2026-06-03 15:45:00',
@@ -65,6 +79,7 @@ db.serialize(() => {
       insertFault.run(
         '用户登录异常',
         '部分用户无法登录系统，验证码发送失败',
+        'major',
         'major',
         '2026-06-02 09:15:00',
         '2026-06-02 10:30:00',
@@ -96,32 +111,74 @@ db.serialize(() => {
   });
 });
 
+const LEVEL_ORDER = { info: 0, minor: 1, major: 2, critical: 3 };
+
 app.get('/api/faults', (req, res) => {
-  const { level, status } = req.query;
+  const { level, status, search, sortBy, sortOrder, page, pageSize } = req.query;
   let sql = 'SELECT * FROM faults';
   const params = [];
+  const conditions = [];
   
-  if (level || status) {
-    const conditions = [];
-    if (level) {
-      conditions.push('level = ?');
-      params.push(level);
-    }
-    if (status) {
-      conditions.push('status = ?');
-      params.push(status);
-    }
+  if (level) {
+    conditions.push('level = ?');
+    params.push(level);
+  }
+  if (status) {
+    conditions.push('status = ?');
+    params.push(status);
+  }
+  if (search) {
+    conditions.push('(title LIKE ? OR description LIKE ? OR rootCause LIKE ?)');
+    const searchTerm = `%${search}%`;
+    params.push(searchTerm, searchTerm, searchTerm);
+  }
+  
+  if (conditions.length > 0) {
     sql += ' WHERE ' + conditions.join(' AND ');
   }
   
-  sql += ' ORDER BY startTime DESC';
+  const sortField = sortBy || 'startTime';
+  const sortDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
   
-  db.all(sql, params, (err, rows) => {
+  if (sortField === 'level') {
+    sql += ' ORDER BY CASE level ';
+    Object.entries(LEVEL_ORDER).forEach(([lvl, idx]) => {
+      sql += `WHEN '${lvl}' THEN ${idx} `;
+    });
+    sql += `END ${sortDir}`;
+  } else if (sortField === 'duration') {
+    sql += ` ORDER BY (CASE WHEN endTime IS NOT NULL THEN strftime('%s', endTime) ELSE strftime('%s', 'now') END - strftime('%s', startTime)) ${sortDir}`;
+  } else {
+    sql += ` ORDER BY ${sortField} ${sortDir}`;
+  }
+  
+  const p = parseInt(page) || 1;
+  const ps = parseInt(pageSize) || 10;
+  const offset = (p - 1) * ps;
+  
+  const countSql = sql.replace('SELECT *', 'SELECT COUNT(*) as total');
+  db.get(countSql, params, (err, countResult) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json(rows);
+    
+    sql += ' LIMIT ? OFFSET ?';
+    params.push(ps, offset);
+    
+    db.all(sql, params, (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json({
+        data: rows,
+        total: countResult.total,
+        page: p,
+        pageSize: ps,
+        totalPages: Math.ceil(countResult.total / ps)
+      });
+    });
   });
 });
 
@@ -151,10 +208,10 @@ app.post('/api/faults', (req, res) => {
   
   db.serialize(() => {
     const stmt = db.prepare(`INSERT INTO faults 
-      (title, description, level, startTime, endTime, affectedModules, rootCause, solution, status) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (title, description, level, originalLevel, startTime, endTime, affectedModules, rootCause, solution, status) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     
-    stmt.run(title, description, level, startTime, endTime, affectedModules, rootCause, solution, status || 'active', function(err) {
+    stmt.run(title, description, level, level, startTime, endTime, affectedModules, rootCause, solution, status || 'active', function(err) {
       if (err) {
         res.status(500).json({ error: err.message });
         return;
@@ -251,6 +308,163 @@ app.delete('/api/faults/:id', (req, res) => {
     });
   });
 });
+
+app.post('/api/faults/batch/update-status', (req, res) => {
+  const { ids, status } = req.body;
+  
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: '请提供要更新的故障ID列表' });
+  }
+  if (!status) {
+    return res.status(400).json({ error: '请提供目标状态' });
+  }
+  
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `UPDATE faults SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`;
+  const params = [status, ...ids];
+  
+  db.run(sql, params, function(err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json({ message: `成功更新 ${this.changes} 条记录`, updated: this.changes });
+  });
+});
+
+app.post('/api/faults/batch/delete', (req, res) => {
+  const { ids } = req.body;
+  
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: '请提供要删除的故障ID列表' });
+  }
+  
+  db.serialize(() => {
+    const placeholders = ids.map(() => '?').join(',');
+    
+    db.run(`DELETE FROM timelines WHERE faultId IN (${placeholders})`, ids, (err) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      
+      db.run(`DELETE FROM escalation_logs WHERE faultId IN (${placeholders})`, ids, (err) => {
+        if (err) {
+          res.status(500).json({ error: err.message });
+          return;
+        }
+        
+        db.run(`DELETE FROM faults WHERE id IN (${placeholders})`, ids, function(err) {
+          if (err) {
+            res.status(500).json({ error: err.message });
+            return;
+          }
+          res.json({ message: `成功删除 ${this.changes} 条记录`, deleted: this.changes });
+        });
+      });
+    });
+  });
+});
+
+app.get('/api/faults/:id/escalation-logs', (req, res) => {
+  const { id } = req.params;
+  db.all('SELECT * FROM escalation_logs WHERE faultId = ? ORDER BY escalatedAt DESC', [id], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+const ESCALATION_MAP = {
+  info: 'minor',
+  minor: 'major',
+  major: 'critical',
+  critical: 'critical'
+};
+
+const LEVEL_LABELS = {
+  info: '提示',
+  minor: '一般',
+  major: '重要',
+  critical: '严重'
+};
+
+const checkAndEscalateFaults = () => {
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+  
+  db.all(`SELECT * FROM faults 
+          WHERE status != 'resolved' 
+            AND (lastEscalatedAt IS NULL OR lastEscalatedAt < ?)
+            AND (lastEscalatedAt IS NULL OR startTime < ?)
+            AND (lastEscalatedAt IS NOT NULL OR startTime < ?)`,
+    [twentyFourHoursAgo, twentyFourHoursAgo, twentyFourHoursAgo],
+    (err, faults) => {
+      if (err) {
+        console.error('检查升级故障失败:', err.message);
+        return;
+      }
+      
+      faults.forEach(fault => {
+        const checkTime = fault.lastEscalatedAt ? new Date(fault.lastEscalatedAt) : new Date(fault.startTime);
+        const hoursSinceCheck = (Date.now() - checkTime.getTime()) / (1000 * 60 * 60);
+        
+        if (hoursSinceCheck >= 24 && fault.level !== 'critical') {
+          const oldLevel = fault.level;
+          const newLevel = ESCALATION_MAP[oldLevel];
+          const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          
+          db.serialize(() => {
+            db.run(`UPDATE faults 
+                    SET level = ?, escalationCount = COALESCE(escalationCount, 0) + 1, 
+                        lastEscalatedAt = ?, updatedAt = CURRENT_TIMESTAMP 
+                    WHERE id = ?`,
+              [newLevel, now, fault.id],
+              (err) => {
+                if (err) {
+                  console.error(`升级故障 ${fault.id} 失败:`, err.message);
+                  return;
+                }
+                
+                db.run(`INSERT INTO escalation_logs 
+                        (faultId, oldLevel, newLevel, reason, escalatedAt) 
+                        VALUES (?, ?, ?, ?, ?)`,
+                  [fault.id, oldLevel, newLevel, 
+                   `故障处理超过24小时未解决，自动从${LEVEL_LABELS[oldLevel]}升级为${LEVEL_LABELS[newLevel]}`, 
+                   now],
+                  (err) => {
+                    if (err) {
+                      console.error(`记录升级日志失败:`, err.message);
+                      return;
+                    }
+                    console.log(`故障 ${fault.id} 已从 ${oldLevel} 升级为 ${newLevel}`);
+                  }
+                );
+                
+                db.run(`INSERT INTO timelines 
+                        (faultId, time, event, operator) 
+                        VALUES (?, ?, ?, ?)`,
+                  [fault.id, now, 
+                   `系统自动升级：故障级别从${LEVEL_LABELS[oldLevel]}调整为${LEVEL_LABELS[newLevel]}（处理超过24小时未解决）`, 
+                   '系统'],
+                  (err) => {
+                    if (err) {
+                      console.error(`添加时间线记录失败:`, err.message);
+                    }
+                  }
+                );
+              }
+            );
+          });
+        }
+      });
+    }
+  );
+};
+
+setInterval(checkAndEscalateFaults, 60 * 60 * 1000);
+setTimeout(checkAndEscalateFaults, 5000);
 
 app.get('/api/stats', (req, res) => {
   db.serialize(() => {

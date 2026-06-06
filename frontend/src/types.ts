@@ -11,15 +11,35 @@ export interface Fault {
   title: string;
   description: string;
   level: 'critical' | 'major' | 'minor' | 'info';
+  originalLevel?: 'critical' | 'major' | 'minor' | 'info';
   startTime: string;
   endTime?: string;
   affectedModules: string;
   rootCause?: string;
   solution?: string;
   status: 'active' | 'resolved' | 'monitoring';
+  lastEscalatedAt?: string;
+  escalationCount?: number;
   createdAt: string;
   updatedAt: string;
   timelines?: TimelineEvent[];
+}
+
+export interface EscalationLog {
+  id: number;
+  faultId: number;
+  oldLevel: 'critical' | 'major' | 'minor' | 'info';
+  newLevel: 'critical' | 'major' | 'minor' | 'info';
+  reason: string;
+  escalatedAt: string;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 export interface TrendItem {
