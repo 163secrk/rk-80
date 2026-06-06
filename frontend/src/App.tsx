@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { api } from './api';
 import type { Fault, Stats } from './types';
 import { levelConfig, statusConfig } from './types';
@@ -36,6 +36,8 @@ function App() {
   const [filterLevel, setFilterLevel] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<string>('');
   const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [debouncedSearchKeyword, setDebouncedSearchKeyword] = useState<string>('');
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>('startTime');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   const [page, setPage] = useState(1);
@@ -68,7 +70,7 @@ function App() {
         api.getFaults({
           level: filterLevel || undefined,
           status: filterStatus || undefined,
-          search: searchKeyword || undefined,
+          search: debouncedSearchKeyword || undefined,
           sortBy,
           sortOrder,
           page,
@@ -85,7 +87,22 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [filterLevel, filterStatus, searchKeyword, sortBy, sortOrder, page, pageSize]);
+  }, [filterLevel, filterStatus, debouncedSearchKeyword, sortBy, sortOrder, page, pageSize]);
+
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+    }
+    searchTimerRef.current = setTimeout(() => {
+      setDebouncedSearchKeyword(searchKeyword);
+      setPage(1);
+    }, 300);
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+      }
+    };
+  }, [searchKeyword]);
 
   useEffect(() => {
     fetchData();
@@ -199,6 +216,7 @@ function App() {
     setFilterLevel('');
     setFilterStatus('');
     setSearchKeyword('');
+    setDebouncedSearchKeyword('');
     setSortBy('startTime');
     setSortOrder('desc');
     setPage(1);
@@ -333,10 +351,10 @@ function App() {
             className="search-input"
             placeholder="搜索标题、描述或根原因..."
             value={searchKeyword}
-            onChange={(e) => { setSearchKeyword(e.target.value); setPage(1); }}
+            onChange={(e) => setSearchKeyword(e.target.value)}
           />
           {searchKeyword && (
-            <button className="clear-search-btn" onClick={() => setSearchKeyword('')}>×</button>
+            <button className="clear-search-btn" onClick={() => { setSearchKeyword(''); setDebouncedSearchKeyword(''); setPage(1); }}>×</button>
           )}
         </div>
       </div>

@@ -128,6 +128,17 @@ db.serialize(() => {
 
 const LEVEL_ORDER = { info: 0, minor: 1, major: 2, critical: 3 };
 
+app.get('/api/faults/csv-template', (req, res) => {
+  const headers = [...REQUIRED_CSV_HEADERS, ...OPTIONAL_CSV_HEADERS];
+  const csvContent = headers.join(',') + '\n' +
+    '支付系统超时,critical,2026-06-03 14:30:00,用户无法完成支付,2026-06-03 15:45:00,支付模块,订单模块,第三方网关故障,切换备用通道,resolved\n' +
+    '登录异常,major,2026-06-02 09:15:00,验证码发送失败,2026-06-02 10:30:00,用户模块,认证模块,短信限流,接入备用通道,resolved';
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="faults_import_template.csv"');
+  res.send('\ufeff' + csvContent);
+});
+
 app.get('/api/faults', (req, res) => {
   const { level, status, search, sortBy, sortOrder, page, pageSize } = req.query;
   let sql = 'SELECT * FROM faults';
@@ -152,7 +163,8 @@ app.get('/api/faults', (req, res) => {
     sql += ' WHERE ' + conditions.join(' AND ');
   }
   
-  const sortField = sortBy || 'startTime';
+  const ALLOWED_SORT_FIELDS = ['startTime', 'level', 'duration', 'title', 'status', 'createdAt', 'updatedAt'];
+  const sortField = ALLOWED_SORT_FIELDS.includes(sortBy) ? sortBy : 'startTime';
   const sortDir = sortOrder === 'asc' ? 'ASC' : 'DESC';
   
   if (sortField === 'level') {
@@ -1003,17 +1015,6 @@ app.get('/api/faults/:id/export-word', (req, res) => {
       }
     });
   });
-});
-
-app.get('/api/faults/csv-template', (req, res) => {
-  const headers = [...REQUIRED_CSV_HEADERS, ...OPTIONAL_CSV_HEADERS];
-  const csvContent = headers.join(',') + '\n' +
-    '支付系统超时,critical,2026-06-03 14:30:00,用户无法完成支付,2026-06-03 15:45:00,支付模块,订单模块,第三方网关故障,切换备用通道,resolved\n' +
-    '登录异常,major,2026-06-02 09:15:00,验证码发送失败,2026-06-02 10:30:00,用户模块,认证模块,短信限流,接入备用通道,resolved';
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="faults_import_template.csv"');
-  res.send('\ufeff' + csvContent);
 });
 
 app.listen(PORT, () => {
